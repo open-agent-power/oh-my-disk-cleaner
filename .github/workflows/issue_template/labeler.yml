@@ -1,0 +1,110 @@
+enable:
+  issues: false
+  prs: true
+
+comments:
+  prs: |
+    🏷️ Labeler has automatically applied labels based on your PR title, branch name, or commit message.
+    Please verify that they are correct before merging.
+
+labels:
+  # 세팅
+  'setting':
+    include:
+      - '\bsetting\b'
+      - '^setting\/'
+
+  # 기능 추가 / 퍼블리싱
+  'feat':
+    include:
+      - '\bfeat\b'
+      - '\bfeature\b'
+      - '^feat\/'
+      - '^feature\/'
+
+  # 버그 수정
+  'fix':
+    include:
+      - '\bfix\b'
+      - '^fix\/'
+
+  # API 연결
+  'api':
+    include:
+      - '\bapi\b'
+      - '^api\/'
+
+  # 코드 리팩토링 / QA 반영
+  'refactor':
+    include:
+      - '\brefactor\b'
+      - '^refactor\/'
+
+  # 기타 작업 (빌드, 패키지 설정)
+  'chore':
+    include:
+      - '\bchore\b'
+      - '^chore\/'
+
+  # 배포 작업
+  'deploy':
+    include:
+      - '\bdeploy\b'
+      - '^deploy\/'
+
+  # 주석 추가/변경
+  'comment':
+    include:
+      - '\bcomment\b'
+      - '^comment\/'
+
+  # 테스트 관련
+  'test':
+    include:
+      - '\btest\b'
+      - '^test\/'
+
+  # 문서 수정
+  'docs':
+    include:
+      - '\bdocs\b'
+      - '\breadme\b'
+      - '^docs\/'
+
+  # 파일 삭제
+  'remove':
+    include:
+      - '\bremove\b'
+      - '^remove\/'
+
+  # 이름 변경
+  'rename':
+    include:
+      - '\brename\b'
+      - '^rename\/'
+
+  # 큰 변경 사항
+  'BREAKING CHANGE':
+    include:
+      - '\bBREAKING CHANGE\b'
+      - '\bBREAKING_CHANGE\b'
+      - '^breaking\/'
+
+  # 긴급 수정
+  'HOTFIX':
+    include:
+      - '\bHOTFIX\b'
+      - '\bhotfix\b'
+      - '^hotfix\/'
+
+  # 코드 스타일 변경
+  'style':
+    include:
+      - '\bstyle\b'
+      - '^style\/'
+
+  # 단순 업데이트
+  'update':
+    include:
+      - '\bupdate\b'
+      - '^update\/'
