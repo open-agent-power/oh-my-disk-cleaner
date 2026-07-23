@@ -13,7 +13,7 @@ import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 # Use smart bootstrap module to import diskcleaner
 try:
@@ -22,7 +22,7 @@ try:
     if str(script_dir) not in sys.path:
         sys.path.insert(0, str(script_dir))
 
-    from skill_bootstrap import import_diskcleaner_modules, setup_skill_environment
+    from skill_bootstrap import import_diskcleaner_modules
 
     # Setup skill environment and import modules
     IMPORT_SUCCESS, MODULES = import_diskcleaner_modules()
@@ -43,7 +43,40 @@ except Exception as e:
     except ImportError:
         PROGRESS_AVAILABLE = False
         ProgressBar = None
-        print(f"[Warning] Cannot import diskcleaner module, some features unavailable: {e}", file=sys.stderr)
+        print(
+            f"[Warning] Cannot import diskcleaner module, some features unavailable: {e}",
+            file=sys.stderr,
+        )
+
+
+# Custom --path targets must contain at least one of these names as a path
+# segment (case-insensitive) to be treated as junk by default. Anything else
+# requires explicit opt-in via --allow-unsafe-path. Kept conservative on
+# purpose: a false negative (refuse) is safe, a false positive (allow) is not.
+JUNK_NAME_HINTS = {
+    "cache",
+    "caches",
+    "tmp",
+    "temp",
+    "temporary",
+    "logs",
+    "log",
+    "trash",
+    "recycle",
+    "recycler",
+    "$recycle.bin",
+    "downloads",
+    "cookies",
+    "history",
+    "inetcache",
+    "prefetch",
+    "softwaredistribution",
+    "webcache",
+}
+
+
+class UnsafePathError(ValueError):
+    """Raised when a custom --path is refused by the safety gate."""
 
 
 class DiskCleaner:
@@ -136,20 +169,167 @@ class DiskCleaner:
         return protected
 
     def _is_safe_to_delete(self, path: Path) -> bool:
-        """Check if a path is safe to delete"""
-        # Check if path is in protected locations
+        """Check if a path is safe to delete.
+
+        Uses path-aware comparisons (Path equality / parents) instead of raw
+        ``str.startswith`` so that a protected prefix like ``/usr`` can never
+        accidentally protect (or fail to protect) a sibling such as
+        ``/usr-local``.
+        """
+        try:
+            resolved = path.resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            resolved = path
+
+        # Protected system prefixes (path-aware): the path itself, or anything
+        # nested below one of them.
         for protected in self.protected_paths:
             try:
-                if str(path).startswith(protected):
-                    return False
-            except (OSError, ValueError):
+                prot = Path(protected).resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
                 continue
+            if resolved == prot or prot in resolved.parents:
+                return False
+
+        # Protected exact roots: filesystem root and home/profile root.
+        if self._is_filesystem_root(resolved):
+            return False
+        for root in self._get_protected_roots():
+            if resolved == root:
+                return False
 
         # Check file extension
         if path.suffix.lower() in self.protected_extensions:
             return False
 
         return True
+
+    def _is_filesystem_root(self, path: Path) -> bool:
+        """Return True for filesystem roots: ``/`` on POSIX, drive/UNC roots
+        such as ``C:\\`` on Windows."""
+        text = str(path)
+        if text in (os.sep, "/"):
+            return True
+        drive, tail = os.path.splitdrive(text)
+        if drive and tail.strip("/\\") == "":
+            return True
+        return False
+
+    def _get_protected_roots(self) -> Set[Path]:
+        """Exact-match roots that must never be cleaned: the filesystem root
+        and the user's home / profile root. Subdirectories such as ``~/.cache``
+        or ``~/Library/Caches`` are still allowed because this check only
+        matches the root directory itself, not its children."""
+        roots = set()
+        try:
+            roots.add(Path(os.path.abspath(os.sep)).resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            pass
+        try:
+            roots.add(Path(os.path.expanduser("~")).resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return roots
+
+    def _directory_size(self, path: Path) -> int:
+        """Recursively compute the on-disk size in bytes of a directory tree.
+        Symlinks are not followed, so a link can never inflate the estimate."""
+        total = 0
+        try:
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            total += self._directory_size(Path(entry.path))
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except (OSError, ValueError):
+                        continue
+        except (OSError, PermissionError):
+            pass
+        return total
+
+    @staticmethod
+    def _is_real_dir(path: Path) -> bool:
+        """True if ``path`` is a directory and not a symlink. This is a
+        Python 3.6-compatible replacement for
+        ``Path.is_dir(follow_symlinks=False)``, which only exists on 3.12+."""
+        try:
+            return not path.is_symlink() and path.is_dir()
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    def validate_custom_path(
+        self,
+        path: str,
+        force: bool = False,
+        allow_unsafe: bool = False,
+        confirm_path: Optional[str] = None,
+    ) -> str:
+        """Safety gate for ``--path``. Returns the resolved absolute path, or
+        raises ``UnsafePathError`` explaining why the path is refused.
+
+        Defence in depth:
+
+        1. Never clean a filesystem root.
+        2. Never clean the home / profile root (its subdirectories are fine).
+        3. By default the path must look like junk (cache/tmp/temp/logs/
+           trash/recycle/...); otherwise require --allow-unsafe-path.
+        4. Using --path together with --force requires
+           --confirm-path <resolved-absolute-path>.
+        """
+        try:
+            resolved = Path(path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise UnsafePathError(f"Cannot resolve path {path!r}: {exc}")
+
+        if self._is_filesystem_root(resolved):
+            raise UnsafePathError(
+                f"Refusing to clean filesystem root {resolved}. "
+                "Disk Cleaner never cleans filesystem roots."
+            )
+
+        for root in self._get_protected_roots():
+            if resolved == root:
+                raise UnsafePathError(
+                    f"Refusing to clean home/profile root {resolved}. "
+                    "Point --path at a junk subdirectory such as "
+                    "~/.cache or ~/Library/Caches instead."
+                )
+
+        # Strip a leading dot so hidden junk dirs (~/.cache, ~/.Trash) match.
+        segments = [part.lower().lstrip(".") for part in resolved.parts]
+        looks_like_junk = any(part in JUNK_NAME_HINTS for part in segments)
+        if not looks_like_junk and not allow_unsafe:
+            raise UnsafePathError(
+                f"Custom path {resolved} does not look like a "
+                "cache/temp/log/trash directory. By default Disk Cleaner only "
+                "cleans junk-like paths. To proceed, re-run with "
+                "--allow-unsafe-path (and, when using --force, also "
+                "--confirm-path <resolved-path>)."
+            )
+
+        if force:
+            if not confirm_path:
+                raise UnsafePathError(
+                    "Using --path with --force requires "
+                    "--confirm-path <resolved-absolute-path> to acknowledge "
+                    f"exactly what will be deleted. Expected: "
+                    f"--confirm-path {resolved}"
+                )
+            try:
+                confirmed = Path(confirm_path).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                confirmed = Path(confirm_path)
+            if str(confirmed) != str(resolved):
+                raise UnsafePathError(
+                    "--confirm-path does not match the resolved path.\n"
+                    f"  provided: {confirmed}\n  resolved:  {resolved}"
+                )
+
+        return str(resolved)
 
     def _deduplicate_paths(self, paths: List[str]) -> List[str]:
         """Deduplicate list of paths by resolving to real paths."""
@@ -337,16 +517,27 @@ class DiskCleaner:
                         if size_mb > max_size_mb:
                             continue
 
-                    # Calculate size
-                    size = item.stat().st_size
+                    # Calculate size. For directories in dry-run, recurse so
+                    # the preview reflects the real recursive impact instead
+                    # of just the directory-entry size (which is tiny and
+                    # misleadingly reassuring).
+                    if self.dry_run and self._is_real_dir(item):
+                        size = self._directory_size(item)
+                    else:
+                        try:
+                            size = item.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            size = 0
 
                     # Delete (or simulate)
                     if self.dry_run:
                         result["files_deleted"] += 1
                         result["space_freed_mb"] += size / (1024 * 1024)
                     else:
-                        if item.is_dir():
-                            shutil.rmtree(item, ignore_errors=True)
+                        if self._is_real_dir(item):
+                            # Do not swallow failures: surface them so a
+                            # partially-failed recursive delete is visible.
+                            shutil.rmtree(item)
                         else:
                             item.unlink()
 
@@ -619,7 +810,23 @@ Examples:
     parser.add_argument(
         "--path",
         "-p",
-        help="Clean specific custom path (in addition to system locations)",
+        help="Clean a specific custom path. WARNING: --path deletes matching "
+        "child directories RECURSIVELY. The path must look like junk "
+        "(cache/temp/log/trash/...) or be opted into with --allow-unsafe-path. "
+        "Never point this at ~, /Users/<name>, C:\\Users\\<name>, ~/Documents "
+        "or ~/Developer.",
+    )
+    parser.add_argument(
+        "--allow-unsafe-path",
+        action="store_true",
+        help="Allow a --path target that does not look like junk "
+        "(cache/temp/log/trash). Required to clean an arbitrary directory.",
+    )
+    parser.add_argument(
+        "--confirm-path",
+        metavar="RESOLVED_PATH",
+        help="Required when combining --path with --force: pass the resolved "
+        "absolute path to acknowledge exactly what will be deleted.",
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--output", "-o", help="Save report to file")
@@ -635,7 +842,8 @@ Examples:
 
     # Run specific or all cleaning
     if args.path:
-        # Clean custom path specified by user
+        # Clean custom path specified by user -- run it through the safety
+        # gate first. See DiskCleaner.validate_custom_path for the rules.
         from pathlib import Path as PathLib
 
         custom_path = PathLib(args.path)
@@ -643,7 +851,18 @@ Examples:
             print(f"[X] Error: Path does not exist: {args.path}", file=sys.stderr)
             sys.exit(1)
 
-        result = cleaner.clean_directory(str(custom_path), show_progress=show_progress)
+        try:
+            resolved_path = cleaner.validate_custom_path(
+                str(custom_path),
+                force=args.force,
+                allow_unsafe=args.allow_unsafe_path,
+                confirm_path=args.confirm_path,
+            )
+        except UnsafePathError as exc:
+            print(f"[X] Refusing to clean custom path:\n    {exc}", file=sys.stderr)
+            sys.exit(2)
+
+        result = cleaner.clean_directory(resolved_path, show_progress=show_progress)
         results = {
             "timestamp": datetime.now().isoformat(),
             "dry_run": dry_run,
