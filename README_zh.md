@@ -136,6 +136,27 @@ python skills/disk-cleaner/scripts/monitor_disk.py
 python skills/disk-cleaner/scripts/monitor_disk.py --watch
 ```
 
+### macOS QQ 图片和表情清理
+
+该脚本只处理 QQ 本地的 `Pic` 和 `Emoji` 文件，不会选择聊天数据库
+`nt_db`。清理命令默认仅预览，确认结果并退出 QQ 后才可执行。
+
+```zsh
+# 只读检查 QQ 存储占用
+skills/disk-cleaner/scripts/qq_cleanup_macos.zsh audit
+
+# 预览 90 天以前的图片和表情，不修改文件
+skills/disk-cleaner/scripts/qq_cleanup_macos.zsh clean \
+  --older-than-days 90 --categories Pic,Emoji
+
+# 确认预览结果并退出 QQ 后执行
+skills/disk-cleaner/scripts/qq_cleanup_macos.zsh clean \
+  --older-than-days 90 --categories Pic,Emoji --execute
+```
+
+删除本地媒体后，旧聊天中的图片或表情可能无法再次下载。保留 `nt_db`
+表示脚本不会删除聊天数据库，但不能保证所有历史附件仍可使用。
+
 ### v2.1 高级使用
 
 ```bash
