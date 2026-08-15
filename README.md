@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Disk Cleaner Logo" width="180">
+</p>
+
 # Disk Cleaner v2.1 - Intelligent Cross-Platform Disk Management
 
 **[English](README.md)** | **[中文文档](README_zh.md)**
