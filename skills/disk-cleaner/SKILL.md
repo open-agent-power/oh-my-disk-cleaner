@@ -117,6 +117,31 @@ Your report to human:     ✅ Scan completed successfully! Found 50,000 files in
 11. **package_skill.py** - Package creation tool
 12. **scheduler.py** - Automated scheduling
 
+### macOS QQ media cleanup
+
+Use `scripts/qq_cleanup_macos.zsh` when QQ pictures or emojis consume excessive
+space on macOS and chat records must remain intact.
+
+1. Audit QQ storage without changing files:
+
+   ```zsh
+   scripts/qq_cleanup_macos.zsh audit
+   ```
+
+2. Preview pictures and emojis older than 90 days:
+
+   ```zsh
+   scripts/qq_cleanup_macos.zsh clean --older-than-days 90 --categories Pic,Emoji
+   ```
+
+3. Report the preview and obtain explicit approval. Quit QQ, then repeat the
+   approved command with `--execute`.
+
+Never select `nt_db`, account roots, preferences, voice messages, videos, or
+received files. The script accepts only `Pic` and `Emoji`, defaults to preview,
+and refuses execution while QQ is running. Warn that removed local media might
+no longer be available in old conversations.
+
 ### 🚀 Multi-Agent Acceleration (CRITICAL FOR PERFORMANCE)
 
 **🎯 KEY INSIGHT: Use Sub-Agents for Parallel Processing**

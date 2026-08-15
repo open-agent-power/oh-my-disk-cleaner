@@ -171,6 +171,7 @@ def get_files_to_include(project_root: Path, skill_root: Path) -> List[Tuple[Pat
         "scripts/check_skill.py",
         "scripts/package_skill.py",
         "scripts/scheduler.py",
+        "scripts/qq_cleanup_macos.zsh",
         "references/temp_locations.md",
     ]
 
