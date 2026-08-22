@@ -86,7 +86,7 @@ See [Usage](#usage-examples) section for how to run the scripts.
 - **💻 Platform-Specific Optimization** - Windows Update, APT, Homebrew cache detection
 - **⏰ Automated Scheduling** - Timer-based cleanup tasks
 - **🎯 Interactive Cleanup UI** - 5 view modes with visual feedback
-- **🛡️ Enhanced Safety** - Protected paths, 'YES' confirmation, backup & logging
+- **🛡️ Enhanced Safety** - Protected paths/extensions, filesystem & home root protection, junk-path gate with explicit `--confirm-path`, dry-run by default
 
 ## Features
 
@@ -396,8 +396,10 @@ Safe junk file removal with multiple safety mechanisms.
 **Safety Features:**
 - Protected paths (never deletes system directories)
 - Protected extensions (never deletes executables)
+- Protected roots: filesystem roots and the home/profile root are always refused (subdirectories such as `~/.cache` are still allowed)
+- `--path` safety gate: a custom path must look like junk (cache/temp/log/trash/...) or be opted in with `--allow-unsafe-path`; combining `--path` with `--force` requires `--confirm-path <resolved-absolute-path>`
 - Dry-run mode by default
-- Detailed logging of all operations
+- Recursive dry-run sizing: the preview reflects the real impact of recursive directory deletion
 
 **Categories Cleaned:**
 - **temp**: Temporary files (%TEMP%, /tmp, etc.)
@@ -462,6 +464,36 @@ Continuous or one-shot disk usage monitoring.
 System directories are never touched:
 - Windows: `C:\Windows`, `C:\Program Files`, `C:\ProgramData`
 - Linux/macOS: `/usr`, `/bin`, `/sbin`, `/System`, `/Library`
+
+### Protected Roots
+Filesystem roots (`/`, `C:\`, `D:\`, ...) and the user's home / profile root
+(`~`, `/Users/<name>`, `C:\Users\<name>`) are always **refused** as a clean
+target. Their junk subdirectories (`~/.cache`, `~/Library/Caches`, ...) remain
+cleanable.
+
+### Custom `--path` Safety Gate
+> ⚠️ **WARNING:** `--path` deletes matching child directories **recursively**.
+> Never point `--path` at `~`, `/Users/<name>`, `C:\Users\<name>`,
+> `~/Documents`, or `~/Developer`. These roots are refused automatically, but
+> always run `--dry-run` first and review the preview.
+
+`--path` is gated to prevent accidental data loss:
+
+- By default the path must look like junk — at least one of its path segments
+  must be `cache`, `tmp`, `temp`, `logs`, `trash`, `recycle`, `downloads`, ...
+- Otherwise pass `--allow-unsafe-path` to opt in.
+- Combining `--path` with `--force` additionally requires
+  `--confirm-path <resolved-absolute-path>` so you acknowledge the exact path.
+
+```bash
+# Allowed: junk-looking path, dry-run only
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/Temp" --dry-run
+
+# Non-junk path: requires --allow-unsafe-path, and --force requires --confirm-path
+python skills/disk-cleaner/scripts/clean_disk.py \
+  --path "D:/MyBuildOutput" --allow-unsafe-path --force \
+  --confirm-path "D:/MyBuildOutput"
+```
 
 ### Protected Extensions
 Executables and system files are protected:
