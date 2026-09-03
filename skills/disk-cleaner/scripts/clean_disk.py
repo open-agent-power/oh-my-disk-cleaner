@@ -9,11 +9,11 @@ Enhanced with progress bars for better user feedback.
 import json
 import os
 import platform
-import shutil
+import stat
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 # Use smart bootstrap module to import diskcleaner
 try:
@@ -214,22 +214,63 @@ class DiskCleaner:
         return path == home
 
     @staticmethod
-    def _item_size(path: Path) -> int:
-        """Measure the bytes selected by recursive deletion."""
-        if path.is_symlink() or not path.is_dir():
-            return path.lstat().st_size
+    def _is_windows_reparse_point(path: Path) -> bool:
+        """Recognize Windows junctions and other reparse-point leaves."""
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        return bool(attributes & reparse_flag)
 
-        total = 0
-        pending = [path]
-        while pending:
-            with os.scandir(str(pending.pop())) as entries:
-                for entry in entries:
-                    stat = entry.stat(follow_symlinks=False)
-                    if entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
-                    else:
-                        total += stat.st_size
-        return total
+    def _build_deletion_plan(self, path: Path) -> Tuple[List[Tuple[Path, str, int]], bool]:
+        """Select safe leaf removals and empty-directory removals in postorder."""
+        if not self._is_safe_to_delete(path):
+            return [], False
+
+        size = path.lstat().st_size
+        if self._is_windows_reparse_point(path):
+            operation = "rmdir" if path.is_dir() else "unlink"
+            return [(path, operation, size)], True
+        if path.is_symlink():
+            return [(path, "unlink", size)], True
+        if not path.is_dir():
+            return [(path, "unlink", size)], True
+
+        operations = []
+        fully_selected = True
+        with os.scandir(str(path)) as entries:
+            for entry in entries:
+                child_operations, child_fully_selected = self._build_deletion_plan(Path(entry.path))
+                operations.extend(child_operations)
+                fully_selected = fully_selected and child_fully_selected
+
+        if fully_selected:
+            operations.append((path, "rmdir", 0))
+        return operations, fully_selected
+
+    def _item_size(self, path: Path) -> int:
+        """Measure the bytes selected by the recursive deletion plan."""
+        operations, _ = self._build_deletion_plan(path)
+        return sum(size for _, _, size in operations)
+
+    @staticmethod
+    def _execute_deletion_plan(
+        operations: List[Tuple[Path, str, int]]
+    ) -> Tuple[int, bool, List[str]]:
+        """Execute every planned leaf and report observed partial progress."""
+        freed_bytes = 0
+        removed_any = False
+        errors = []
+        for path, operation, planned_size in operations:
+            try:
+                if operation == "rmdir":
+                    path.rmdir()
+                else:
+                    path.unlink()
+            except (OSError, RuntimeError) as error:
+                errors.append(f"{path}: {error}")
+            else:
+                removed_any = True
+                freed_bytes += planned_size
+        return freed_bytes, removed_any, errors
 
     def validate_custom_path(
         self,
@@ -468,8 +509,11 @@ class DiskCleaner:
                         if mtime > cutoff_date:
                             continue
 
-                    # One measurement drives preview, filtering, and deletion reports.
-                    size = self._item_size(item)
+                    # One plan drives preview, filtering, and deletion.
+                    operations, _ = self._build_deletion_plan(item)
+                    if not operations:
+                        continue
+                    size = sum(operation[2] for operation in operations)
 
                     # Size check
                     if max_size_mb is not None:
@@ -482,13 +526,13 @@ class DiskCleaner:
                         result["files_deleted"] += 1
                         result["space_freed_mb"] += size / (1024 * 1024)
                     else:
-                        if item.is_dir() and not item.is_symlink():
-                            shutil.rmtree(item)
-                        else:
-                            item.unlink()
-
-                        result["files_deleted"] += 1
-                        result["space_freed_mb"] += size / (1024 * 1024)
+                        freed_bytes, removed_any, errors = self._execute_deletion_plan(operations)
+                        result["errors"].extend(errors)
+                        self.errors.extend(errors)
+                        if removed_any:
+                            # Preserve the existing top-level item count contract.
+                            result["files_deleted"] += 1
+                            result["space_freed_mb"] += freed_bytes / (1024 * 1024)
 
                     # Update progress (safely get item name)
                     if progress:
@@ -510,7 +554,9 @@ class DiskCleaner:
                 progress.close()
 
         except (PermissionError, OSError) as e:
-            result["errors"].append(str(e))
+            error = f"{dir_path}: {e}"
+            result["errors"].append(error)
+            self.errors.append(error)
 
         result["space_freed_mb"] = round(result["space_freed_mb"], 2)
         return result
@@ -877,6 +923,9 @@ Examples:
         with open(args.output, "w") as f:
             json.dump(results, f, indent=2)
         print(f"\n[OK] Report saved to {args.output}")
+
+    if results["summary"]["total_errors"] > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -418,7 +418,10 @@ python scripts/monitor_disk.py --watch --interval 300
 当前用户主目录。名称为 `cache`、`tmp`、`temp`、`logs`、`trash`、
 `recycle` 或 `downloads` 的目标目录可以直接预览。其他名称的目录，以及包含
 项目标记的同名目录，需要传入 `--allow-unsafe-path`。执行自定义路径删除时，
-还需要通过 `--confirm-path` 提供解析后的绝对路径。
+还需要通过 `--confirm-path` 提供解析后的绝对路径。各层级的受保护扩展名都会
+保留。符号链接和 Windows 重解析点保持叶节点语义。预览与执行使用同一选择。
+报告存在清理错误时，工具会打印报告、写入已请求的输出文件，并以非零状态
+退出。
 
 ```bash
 # 预览已识别的垃圾目录

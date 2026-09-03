@@ -472,7 +472,11 @@ the current home/profile root are rejected. Targets named `cache`, `tmp`,
 `temp`, `logs`, `trash`, `recycle`, or `downloads` are accepted by default.
 Other target names and junk-named directories containing project markers
 require `--allow-unsafe-path`. Actual custom-path deletion also requires
-`--confirm-path` with the resolved absolute target.
+`--confirm-path` with the resolved absolute target. Protected extensions are
+retained at every depth. Symbolic links and Windows reparse points stay leaf
+entries. Preview and execution use the same selection. The tool prints the
+report, writes a requested output file, and then exits with a nonzero status
+when cleanup errors occur.
 
 ```bash
 # Preview a recognized junk directory

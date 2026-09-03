@@ -131,6 +131,30 @@ def test_preview_and_execution_share_selection_and_size(clean_disk, tmp_path):
     assert sorted(path.name for path in execute_root.iterdir()) == ["keep.sh"]
 
 
+def test_recursive_selection_preserves_protected_extensions(clean_disk, tmp_path):
+    preview_root = tmp_path / "preview"
+    execute_root = tmp_path / "execute"
+    for root in (preview_root, execute_root):
+        payload = root / "payload"
+        payload.mkdir(parents=True)
+        (payload / "data.bin").write_bytes(b"x" * (2 * 1024 * 1024))
+        (payload / "keep.sh").write_text("echo keep", encoding="utf-8")
+
+    preview = clean_disk.DiskCleaner(dry_run=True, show_progress=False).clean_directory(
+        str(preview_root)
+    )
+    execution = clean_disk.DiskCleaner(dry_run=False, show_progress=False).clean_directory(
+        str(execute_root)
+    )
+
+    assert preview["files_deleted"] == execution["files_deleted"] == 1
+    assert preview["space_freed_mb"] == execution["space_freed_mb"] == 2.0
+    assert (preview_root / "payload" / "data.bin").exists()
+    assert (preview_root / "payload" / "keep.sh").exists()
+    assert not (execute_root / "payload" / "data.bin").exists()
+    assert (execute_root / "payload" / "keep.sh").exists()
+
+
 def test_recursive_size_drives_max_size_filter(clean_disk, tmp_path):
     root = tmp_path / "cache"
     make_tree(root)
@@ -148,15 +172,148 @@ def test_recursive_delete_failure_is_reported(clean_disk, tmp_path, monkeypatch)
     nested = root / "nested"
     nested.mkdir(parents=True)
 
-    def fail_delete(path):
-        raise OSError("delete failed")
+    original_rmdir = Path.rmdir
 
-    monkeypatch.setattr(clean_disk.shutil, "rmtree", fail_delete)
+    def fail_delete(path):
+        if path == nested:
+            raise OSError("delete failed")
+        original_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", fail_delete)
     result = clean_disk.DiskCleaner(dry_run=False, show_progress=False).clean_directory(str(root))
 
     assert result["files_deleted"] == 0
-    assert result["errors"] == ["delete failed"]
+    assert len(result["errors"]) == 1
+    assert result["errors"][0].endswith("nested: delete failed")
     assert nested.exists()
+
+
+def test_partial_plan_failure_reports_success_and_continues(clean_disk, tmp_path, monkeypatch):
+    root = tmp_path / "cache"
+    payload = root / "payload"
+    payload.mkdir(parents=True)
+    blocked = payload / "blocked.bin"
+    blocked.write_bytes(b"b" * (2 * 1024 * 1024))
+    removed = payload / "removed.bin"
+    removed.write_bytes(b"r" * (1 * 1024 * 1024))
+    original_unlink = Path.unlink
+
+    def fail_one_file(path):
+        if path == blocked:
+            raise OSError("delete failed")
+        original_unlink(path)
+
+    monkeypatch.setattr(Path, "unlink", fail_one_file)
+    result = clean_disk.DiskCleaner(dry_run=False, show_progress=False).clean_directory(str(root))
+
+    assert result["files_deleted"] == 1
+    assert result["space_freed_mb"] == 1.0
+    assert len(result["errors"]) == 2
+    assert any(error.startswith(str(blocked)) for error in result["errors"])
+    assert any(error.startswith(str(payload)) for error in result["errors"])
+    assert blocked.exists()
+    assert not removed.exists()
+
+
+def test_cli_exits_nonzero_after_writing_an_error_report(clean_disk, tmp_path, monkeypatch, capsys):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    report = tmp_path / "report.json"
+
+    def fail_clean_directory(self, path, **kwargs):
+        return {
+            "path": path,
+            "files_deleted": 0,
+            "space_freed_mb": 0,
+            "errors": ["delete failed"],
+        }
+
+    monkeypatch.setattr(clean_disk.DiskCleaner, "clean_directory", fail_clean_directory)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--path",
+            str(cache),
+            "--force",
+            "--confirm-path",
+            str(cache.resolve()),
+            "--json",
+            "--no-progress",
+            "--output",
+            str(report),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        clean_disk.main()
+
+    assert exit_info.value.code == 1
+    assert json.loads(report.read_text(encoding="utf-8"))["summary"]["total_errors"] == 1
+    assert '"total_errors": 1' in capsys.readouterr().out
+
+
+def test_directory_symlink_is_removed_as_a_leaf(clean_disk, tmp_path):
+    root = tmp_path / "cache"
+    root.mkdir()
+    target = tmp_path / "target"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    payload = nested / "payload.bin"
+    payload.write_bytes(b"x" * (2 * 1024 * 1024))
+    link = root / "linked-cache"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"Cannot create a test directory symlink: {error}")
+
+    cleaner = clean_disk.DiskCleaner(dry_run=True, show_progress=False)
+    operations, fully_selected = cleaner._build_deletion_plan(link)
+
+    assert fully_selected is True
+    assert operations == [(link, "unlink", link.lstat().st_size)]
+
+    execution = clean_disk.DiskCleaner(dry_run=False, show_progress=False).clean_directory(
+        str(root)
+    )
+    assert execution["errors"] == []
+    assert not link.exists()
+    assert payload.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics")
+def test_windows_junction_is_removed_as_a_leaf(clean_disk, tmp_path):
+    root = tmp_path / "cache"
+    root.mkdir()
+    target = tmp_path / "target"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    payload = nested / "payload.bin"
+    payload.write_bytes(b"x" * (2 * 1024 * 1024))
+    junction = root / "junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"Cannot create a test junction: {created.stderr.strip()}")
+
+    cleaner = clean_disk.DiskCleaner(dry_run=True, show_progress=False)
+    operations, fully_selected = cleaner._build_deletion_plan(junction)
+    preview = cleaner.clean_directory(str(root))
+
+    assert fully_selected is True
+    assert operations == [(junction, "rmdir", junction.lstat().st_size)]
+    assert preview["space_freed_mb"] == round(junction.lstat().st_size / (1024 * 1024), 2)
+
+    execution = clean_disk.DiskCleaner(dry_run=False, show_progress=False).clean_directory(
+        str(root)
+    )
+    assert execution["errors"] == []
+    assert not junction.exists()
+    assert payload.exists()
 
 
 def test_cli_requires_opt_in_and_exact_confirmation(tmp_path):
