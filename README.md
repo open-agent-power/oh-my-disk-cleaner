@@ -86,7 +86,7 @@ See [Usage](#usage-examples) section for how to run the scripts.
 - **💻 Platform-Specific Optimization** - Windows Update, APT, Homebrew cache detection
 - **⏰ Automated Scheduling** - Timer-based cleanup tasks
 - **🎯 Interactive Cleanup UI** - 5 view modes with visual feedback
-- **🛡️ Enhanced Safety** - Protected paths, 'YES' confirmation, backup & logging
+- **🛡️ Enhanced Safety** - Protected roots and extensions, explicit custom-path opt-in, exact-path confirmation, recursive previews
 
 ## Features
 
@@ -396,8 +396,10 @@ Safe junk file removal with multiple safety mechanisms.
 **Safety Features:**
 - Protected paths (never deletes system directories)
 - Protected extensions (never deletes executables)
+- Filesystem and home/profile roots are always rejected
+- Custom paths use a junk-directory allowlist and exact-path confirmation
 - Dry-run mode by default
-- Detailed logging of all operations
+- Recursive preview sizing matches the execution selection
 
 **Categories Cleaned:**
 - **temp**: Temporary files (%TEMP%, /tmp, etc.)
@@ -462,6 +464,28 @@ Continuous or one-shot disk usage monitoring.
 System directories are never touched:
 - Windows: `C:\Windows`, `C:\Program Files`, `C:\ProgramData`
 - Linux/macOS: `/usr`, `/bin`, `/sbin`, `/System`, `/Library`
+
+### Custom `--path` Boundary
+
+`--path` removes matching child directories recursively. Filesystem roots and
+the current home/profile root are rejected. Targets named `cache`, `tmp`,
+`temp`, `logs`, `trash`, `recycle`, or `downloads` are accepted by default.
+Other target names and junk-named directories containing project markers
+require `--allow-unsafe-path`. Actual custom-path deletion also requires
+`--confirm-path` with the resolved absolute target.
+
+```bash
+# Preview a recognized junk directory
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/Temp" --dry-run
+
+# Execute after confirming the exact target
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/Temp" --force \
+  --confirm-path "D:/Temp"
+
+# Select an arbitrary directory through the explicit opt-in
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/BuildOutput" \
+  --allow-unsafe-path --force --confirm-path "D:/BuildOutput"
+```
 
 ### Protected Extensions
 Executables and system files are protected:
