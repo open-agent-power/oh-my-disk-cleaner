@@ -395,7 +395,7 @@ Safe junk file removal with multiple safety mechanisms.
 
 **Safety Features:**
 - Protected paths (never deletes system directories)
-- Protected extensions (never deletes executables)
+- Protected extensions skip matching top-level entries
 - Filesystem and home/profile roots are always rejected
 - Custom paths use a junk-directory allowlist and exact-path confirmation
 - Dry-run mode by default
@@ -472,11 +472,11 @@ the current home/profile root are rejected. Targets named `cache`, `tmp`,
 `temp`, `logs`, `trash`, `recycle`, or `downloads` are accepted by default.
 Other target names and junk-named directories containing project markers
 require `--allow-unsafe-path`. Actual custom-path deletion also requires
-`--confirm-path` with the resolved absolute target. A child directory containing
-a protected extension, symbolic link, or Windows reparse point is retained as a
-unit. Top-level links stay leaf entries. Preview and execution use the same
-top-level selection. The tool prints the report, writes a requested output file,
-and then exits with a nonzero status when cleanup errors occur.
+`--confirm-path` with the resolved absolute target. The validated root identity
+is checked again immediately before cleanup. Dry-run sizing measures directory
+contents recursively and treats symbolic links and Windows reparse points as
+leaf entries. Cleanup errors remain visible in the report and produce a nonzero
+exit status. Recursive directory execution on Windows requires Python 3.8+.
 
 ```bash
 # Preview a recognized junk directory
@@ -492,7 +492,8 @@ python skills/disk-cleaner/scripts/clean_disk.py --path "D:/BuildOutput" \
 ```
 
 ### Protected Extensions
-Executables and system files are protected:
+Protected extensions apply to matching top-level entries. A selected directory
+is removed recursively with its contents.
 ```
 .exe, .dll, .sys, .drv, .bat, .cmd, .ps1, .sh, .bash, .zsh,
 .app, .dmg, .pkg, .deb, .rpm, .msi, .iso, .vhd, .vhdx

@@ -215,82 +215,33 @@ class DiskCleaner:
         return path == home
 
     @staticmethod
-    def _is_windows_reparse_point(path: Path) -> bool:
-        """Recognize Windows junctions and other reparse-point leaves."""
-        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    def _is_reparse_point(metadata: os.stat_result) -> bool:
+        """Return whether metadata describes a Windows reparse point."""
+        attributes = getattr(metadata, "st_file_attributes", 0)
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
         return bool(attributes & reparse_flag)
 
-    def _build_deletion_plan(self, path: Path) -> Tuple[List[Tuple[Path, str, int]], bool]:
-        """Build one atomic operation for a fully selected top-level item."""
-        return self._inspect_deletion_candidate(path, allow_link_leaf=True)
-
-    def _inspect_deletion_candidate(
-        self, path: Path, allow_link_leaf: bool
-    ) -> Tuple[List[Tuple[Path, str, int]], bool]:
-        """Measure a candidate and retain directory trees containing protected leaves."""
-        if not self._is_safe_to_delete(path):
-            return [], False
-
-        try:
-            size = path.lstat().st_size
-            if self._is_windows_reparse_point(path):
-                if not allow_link_leaf:
-                    return [], False
-                operation = "rmdir" if path.is_dir() else "unlink"
-                return [(path, operation, size)], True
-            if path.is_symlink():
-                if not allow_link_leaf:
-                    return [], False
-                return [(path, "unlink", size)], True
-            if not path.is_dir():
-                return [(path, "unlink", size)], True
-
-            selected_size = 0
-            fully_selected = True
-            with os.scandir(str(path)) as entries:
-                for entry in entries:
-                    child_operations, child_fully_selected = self._inspect_deletion_candidate(
-                        Path(entry.path), allow_link_leaf=False
-                    )
-                    selected_size += sum(operation[2] for operation in child_operations)
-                    fully_selected = fully_selected and child_fully_selected
-
-            if not fully_selected:
-                return [], False
-            return [(path, "rmtree", selected_size)], True
-        except FileNotFoundError:
-            return [], True
-
     def _item_size(self, path: Path) -> int:
-        """Measure the bytes selected by the recursive deletion plan."""
-        operations, _ = self._build_deletion_plan(path)
-        return sum(size for _, _, size in operations)
+        """Measure recursive bytes without following links or reparse points."""
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or self._is_reparse_point(metadata)
+            or not stat.S_ISDIR(metadata.st_mode)
+        ):
+            return metadata.st_size
 
-    @staticmethod
-    def _execute_deletion_plan(
-        operations: List[Tuple[Path, str, int]]
-    ) -> Tuple[int, bool, List[str]]:
-        """Execute every planned leaf and report observed partial progress."""
-        freed_bytes = 0
-        removed_any = False
-        errors = []
-        for path, operation, planned_size in operations:
-            try:
-                if operation == "rmtree":
-                    shutil.rmtree(path)
-                elif operation == "rmdir":
-                    path.rmdir()
-                else:
-                    path.unlink()
-            except FileNotFoundError:
-                continue
-            except (OSError, RuntimeError) as error:
-                errors.append(f"{path}: {error}")
-            else:
-                removed_any = True
-                freed_bytes += planned_size
-        return freed_bytes, removed_any, errors
+        total = 0
+        pending = [path]
+        while pending:
+            with os.scandir(str(pending.pop())) as entries:
+                for entry in entries:
+                    metadata = entry.stat(follow_symlinks=False)
+                    if stat.S_ISDIR(metadata.st_mode) and not self._is_reparse_point(metadata):
+                        pending.append(Path(entry.path))
+                    else:
+                        total += metadata.st_size
+        return total
 
     def validate_custom_path(
         self,
@@ -298,17 +249,25 @@ class DiskCleaner:
         force: bool = False,
         allow_unsafe: bool = False,
         confirm_path: Optional[str] = None,
-    ) -> str:
+    ) -> Tuple[str, Tuple[int, int]]:
         """Resolve and validate a user-supplied cleanup directory."""
+        requested_path = Path(path).expanduser()
         try:
-            target = Path(path).expanduser().resolve()
+            initial_metadata = requested_path.stat()
+        except OSError as error:
+            raise UnsafePathError(f"Cannot inspect custom path {requested_path}: {error}")
+        if not stat.S_ISDIR(initial_metadata.st_mode):
+            raise UnsafePathError(f"Custom path must be a directory: {requested_path}")
+        identity = (initial_metadata.st_dev, initial_metadata.st_ino)
+
+        try:
+            target = requested_path.resolve()
+            resolved_metadata = target.stat()
         except (OSError, RuntimeError, ValueError) as error:
             raise UnsafePathError(f"Cannot resolve custom path {path!r}: {error}")
+        if (resolved_metadata.st_dev, resolved_metadata.st_ino) != identity:
+            raise UnsafePathError(f"Custom path changed during validation: {requested_path}")
 
-        if not target.exists():
-            raise UnsafePathError(f"Path does not exist: {target}")
-        if not target.is_dir():
-            raise UnsafePathError(f"Custom path must be a directory: {target}")
         if self._is_protected_root(target):
             raise UnsafePathError(f"Filesystem and home/profile roots are protected: {target}")
         if not self._is_safe_to_delete(target):
@@ -337,7 +296,14 @@ class DiskCleaner:
             if confirmation != target:
                 raise UnsafePathError(f"--confirm-path must match the cleanup target: {target}")
 
-        return str(target)
+        try:
+            final_metadata = target.stat()
+        except OSError as error:
+            raise UnsafePathError(f"Cannot revalidate custom path {target}: {error}")
+        if (final_metadata.st_dev, final_metadata.st_ino) != identity:
+            raise UnsafePathError(f"Custom path changed during validation: {target}")
+
+        return str(target), identity
 
     def _deduplicate_paths(self, paths: List[str]) -> List[str]:
         """Deduplicate list of paths by resolving to real paths."""
@@ -473,6 +439,7 @@ class DiskCleaner:
         max_size_mb: int = None,
         pattern: str = "*",
         show_progress: bool = True,
+        expected_identity: Optional[Tuple[int, int]] = None,
     ) -> Dict:
         """
         Clean a directory with safety checks and optional progress bar.
@@ -483,14 +450,30 @@ class DiskCleaner:
             max_size_mb: Only delete files smaller than this size (MB)
             pattern: Glob pattern to match files
             show_progress: Show progress bar for this operation
+            expected_identity: Validated device and inode for a custom cleanup root
 
         Returns:
             Dictionary with cleaning results
         """
         result = {"path": path, "files_deleted": 0, "space_freed_mb": 0, "errors": []}
 
+        requested_path = Path(path).expanduser()
+        if expected_identity is not None:
+            try:
+                current_metadata = requested_path.stat()
+            except OSError as error:
+                message = f"Cannot revalidate cleanup root {requested_path}: {error}"
+                result["errors"].append(message)
+                self.errors.append(message)
+                return result
+            if (current_metadata.st_dev, current_metadata.st_ino) != expected_identity:
+                message = f"Cleanup root changed after validation: {requested_path}"
+                result["errors"].append(message)
+                self.errors.append(message)
+                return result
+
         try:
-            dir_path = Path(path).expanduser().resolve()
+            dir_path = requested_path.resolve()
         except (OSError, RuntimeError, ValueError) as error:
             result["errors"].append(str(error))
             self.errors.append(f"{path}: {error}")
@@ -529,11 +512,8 @@ class DiskCleaner:
                         if mtime > cutoff_date:
                             continue
 
-                    # One plan drives preview, filtering, and deletion.
-                    operations, _ = self._build_deletion_plan(item)
-                    if not operations:
-                        continue
-                    size = sum(operation[2] for operation in operations)
+                    # One measurement drives preview, filtering, and deletion reports.
+                    size = self._item_size(item)
 
                     # Size check
                     if max_size_mb is not None:
@@ -546,13 +526,17 @@ class DiskCleaner:
                         result["files_deleted"] += 1
                         result["space_freed_mb"] += size / (1024 * 1024)
                     else:
-                        freed_bytes, removed_any, errors = self._execute_deletion_plan(operations)
-                        result["errors"].extend(errors)
-                        self.errors.extend(errors)
-                        if removed_any:
-                            # Preserve the existing top-level item count contract.
-                            result["files_deleted"] += 1
-                            result["space_freed_mb"] += freed_bytes / (1024 * 1024)
+                        if item.is_dir() and not item.is_symlink():
+                            if self.system == "windows" and sys.version_info < (3, 8):
+                                raise OSError(
+                                    "Recursive directory cleanup on Windows requires Python 3.8+"
+                                )
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+
+                        result["files_deleted"] += 1
+                        result["space_freed_mb"] += size / (1024 * 1024)
 
                     # Update progress (safely get item name)
                     if progress:
@@ -574,9 +558,8 @@ class DiskCleaner:
                 progress.close()
 
         except (PermissionError, OSError) as e:
-            error = f"{dir_path}: {e}"
-            result["errors"].append(error)
-            self.errors.append(error)
+            result["errors"].append(str(e))
+            self.errors.append(f"{dir_path}: {e}")
 
         result["space_freed_mb"] = round(result["space_freed_mb"], 2)
         return result
@@ -854,7 +837,7 @@ Examples:
             print(f"[X] Error: Path does not exist: {args.path}", file=sys.stderr)
             sys.exit(1)
         try:
-            custom_path = cleaner.validate_custom_path(
+            custom_path, custom_identity = cleaner.validate_custom_path(
                 str(requested_path),
                 force=args.force,
                 allow_unsafe=args.allow_unsafe_path,
@@ -864,7 +847,11 @@ Examples:
             print(f"[X] Refusing custom path: {error}", file=sys.stderr)
             sys.exit(2)
 
-        result = cleaner.clean_directory(custom_path, show_progress=show_progress)
+        result = cleaner.clean_directory(
+            custom_path,
+            show_progress=show_progress,
+            expected_identity=custom_identity,
+        )
         results = {
             "timestamp": datetime.now().isoformat(),
             "dry_run": dry_run,
