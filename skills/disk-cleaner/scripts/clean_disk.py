@@ -9,6 +9,7 @@ Enhanced with progress bars for better user feedback.
 import json
 import os
 import platform
+import shutil
 import stat
 import sys
 from datetime import datetime, timedelta
@@ -221,30 +222,45 @@ class DiskCleaner:
         return bool(attributes & reparse_flag)
 
     def _build_deletion_plan(self, path: Path) -> Tuple[List[Tuple[Path, str, int]], bool]:
-        """Select safe leaf removals and empty-directory removals in postorder."""
+        """Build one atomic operation for a fully selected top-level item."""
+        return self._inspect_deletion_candidate(path, allow_link_leaf=True)
+
+    def _inspect_deletion_candidate(
+        self, path: Path, allow_link_leaf: bool
+    ) -> Tuple[List[Tuple[Path, str, int]], bool]:
+        """Measure a candidate and retain directory trees containing protected leaves."""
         if not self._is_safe_to_delete(path):
             return [], False
 
-        size = path.lstat().st_size
-        if self._is_windows_reparse_point(path):
-            operation = "rmdir" if path.is_dir() else "unlink"
-            return [(path, operation, size)], True
-        if path.is_symlink():
-            return [(path, "unlink", size)], True
-        if not path.is_dir():
-            return [(path, "unlink", size)], True
+        try:
+            size = path.lstat().st_size
+            if self._is_windows_reparse_point(path):
+                if not allow_link_leaf:
+                    return [], False
+                operation = "rmdir" if path.is_dir() else "unlink"
+                return [(path, operation, size)], True
+            if path.is_symlink():
+                if not allow_link_leaf:
+                    return [], False
+                return [(path, "unlink", size)], True
+            if not path.is_dir():
+                return [(path, "unlink", size)], True
 
-        operations = []
-        fully_selected = True
-        with os.scandir(str(path)) as entries:
-            for entry in entries:
-                child_operations, child_fully_selected = self._build_deletion_plan(Path(entry.path))
-                operations.extend(child_operations)
-                fully_selected = fully_selected and child_fully_selected
+            selected_size = 0
+            fully_selected = True
+            with os.scandir(str(path)) as entries:
+                for entry in entries:
+                    child_operations, child_fully_selected = self._inspect_deletion_candidate(
+                        Path(entry.path), allow_link_leaf=False
+                    )
+                    selected_size += sum(operation[2] for operation in child_operations)
+                    fully_selected = fully_selected and child_fully_selected
 
-        if fully_selected:
-            operations.append((path, "rmdir", 0))
-        return operations, fully_selected
+            if not fully_selected:
+                return [], False
+            return [(path, "rmtree", selected_size)], True
+        except FileNotFoundError:
+            return [], True
 
     def _item_size(self, path: Path) -> int:
         """Measure the bytes selected by the recursive deletion plan."""
@@ -261,10 +277,14 @@ class DiskCleaner:
         errors = []
         for path, operation, planned_size in operations:
             try:
-                if operation == "rmdir":
+                if operation == "rmtree":
+                    shutil.rmtree(path)
+                elif operation == "rmdir":
                     path.rmdir()
                 else:
                     path.unlink()
+            except FileNotFoundError:
+                continue
             except (OSError, RuntimeError) as error:
                 errors.append(f"{path}: {error}")
             else:
