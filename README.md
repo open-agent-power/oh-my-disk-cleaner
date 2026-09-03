@@ -474,9 +474,10 @@ Other target names and junk-named directories containing project markers
 require `--allow-unsafe-path`. Actual custom-path deletion also requires
 `--confirm-path` with the resolved absolute target. The validated root identity
 is checked again immediately before cleanup. Dry-run sizing measures directory
-contents recursively and treats symbolic links and Windows reparse points as
-leaf entries. Cleanup errors remain visible in the report and produce a nonzero
-exit status.
+contents recursively. Recursive sizing and legacy Windows execution avoid
+following symbolic links and Windows reparse points. Top-level execution removes
+them as leaf entries. Cleanup errors remain visible in the report and produce a
+nonzero exit status.
 
 ```bash
 # Preview a recognized junk directory

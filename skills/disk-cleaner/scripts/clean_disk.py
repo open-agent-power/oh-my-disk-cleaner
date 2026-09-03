@@ -221,9 +221,10 @@ class DiskCleaner:
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
         return bool(attributes & reparse_flag)
 
-    def _item_size(self, path: Path) -> int:
+    def _item_size(self, path: Path, metadata: Optional[os.stat_result] = None) -> int:
         """Measure recursive bytes without following links or reparse points."""
-        metadata = path.lstat()
+        if metadata is None:
+            metadata = path.lstat()
         if (
             stat.S_ISLNK(metadata.st_mode)
             or self._is_reparse_point(metadata)
@@ -242,6 +243,25 @@ class DiskCleaner:
                     else:
                         total += metadata.st_size
         return total
+
+    def _rmtree_legacy_windows(self, path: Path) -> None:
+        """Remove a directory tree without following Windows reparse points."""
+        with os.scandir(str(path)) as entries:
+            for entry in entries:
+                entry_path = Path(entry.path)
+                metadata = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(metadata.st_mode):
+                    entry_path.unlink()
+                elif self._is_reparse_point(metadata):
+                    if stat.S_ISDIR(metadata.st_mode):
+                        entry_path.rmdir()
+                    else:
+                        entry_path.unlink()
+                elif stat.S_ISDIR(metadata.st_mode):
+                    self._rmtree_legacy_windows(entry_path)
+                else:
+                    entry_path.unlink()
+        path.rmdir()
 
     def validate_custom_path(
         self,
@@ -512,8 +532,9 @@ class DiskCleaner:
                         if mtime > cutoff_date:
                             continue
 
-                    # One measurement drives preview, filtering, and deletion reports.
-                    size = self._item_size(item)
+                    # One snapshot drives preview, filtering, and deletion type selection.
+                    metadata = item.lstat()
+                    size = self._item_size(item, metadata)
 
                     # Size check
                     if max_size_mb is not None:
@@ -526,8 +547,18 @@ class DiskCleaner:
                         result["files_deleted"] += 1
                         result["space_freed_mb"] += size / (1024 * 1024)
                     else:
-                        if item.is_dir() and not item.is_symlink():
-                            shutil.rmtree(item)
+                        if stat.S_ISLNK(metadata.st_mode):
+                            item.unlink()
+                        elif self._is_reparse_point(metadata):
+                            if stat.S_ISDIR(metadata.st_mode):
+                                item.rmdir()
+                            else:
+                                item.unlink()
+                        elif stat.S_ISDIR(metadata.st_mode):
+                            if self.system == "windows" and sys.version_info < (3, 8):
+                                self._rmtree_legacy_windows(item)
+                            else:
+                                shutil.rmtree(item)
                         else:
                             item.unlink()
 

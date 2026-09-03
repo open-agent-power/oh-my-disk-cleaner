@@ -181,6 +181,13 @@ def test_recursive_size_does_not_follow_a_directory_symlink(clean_disk, tmp_path
 
     assert measured == local_file.stat().st_size + link.lstat().st_size
 
+    result = clean_disk.DiskCleaner(dry_run=False, show_progress=False).clean_directory(str(root))
+
+    assert result["files_deleted"] == 2
+    assert result["errors"] == []
+    assert not link.exists()
+    assert (target / "external.bin").exists()
+
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics")
 def test_recursive_size_treats_a_windows_junction_as_a_leaf(clean_disk, tmp_path):
@@ -201,6 +208,61 @@ def test_recursive_size_treats_a_windows_junction_as_a_leaf(clean_disk, tmp_path
     measured = clean_disk.DiskCleaner(show_progress=False)._item_size(root)
 
     assert measured == junction.lstat().st_size
+
+    result = clean_disk.DiskCleaner(dry_run=False, show_progress=False).clean_directory(str(root))
+
+    assert result["files_deleted"] == 1
+    assert result["errors"] == []
+    assert not junction.exists()
+    assert (target / "external.bin").exists()
+
+
+def test_legacy_windows_removes_regular_directory_trees(clean_disk, tmp_path, monkeypatch):
+    root = tmp_path / "cache"
+    payload = root / "candidate" / "nested" / "payload.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"delete")
+    cleaner = clean_disk.DiskCleaner(dry_run=False, show_progress=False)
+    cleaner.system = "windows"
+    monkeypatch.setattr(clean_disk.sys, "version_info", (3, 7))
+
+    result = cleaner.clean_directory(str(root))
+
+    assert result["files_deleted"] == 1
+    assert result["errors"] == []
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics")
+def test_legacy_windows_recursive_cleanup_preserves_a_junction_target(
+    clean_disk, tmp_path, monkeypatch
+):
+    root = tmp_path / "cache"
+    candidate = root / "candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "local.bin").write_bytes(b"delete")
+    target = tmp_path / "target"
+    target.mkdir()
+    external_file = target / "external.bin"
+    external_file.write_bytes(b"preserve")
+    junction = candidate / "junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"Cannot create a test junction: {created.stderr.strip()}")
+    cleaner = clean_disk.DiskCleaner(dry_run=False, show_progress=False)
+    cleaner.system = "windows"
+    monkeypatch.setattr(clean_disk.sys, "version_info", (3, 7))
+
+    result = cleaner.clean_directory(str(root))
+
+    assert result["files_deleted"] == 1
+    assert result["errors"] == []
+    assert not candidate.exists()
+    assert external_file.read_bytes() == b"preserve"
 
 
 def test_custom_path_identity_is_rechecked_during_validation(clean_disk, tmp_path, monkeypatch):
