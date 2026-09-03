@@ -81,7 +81,7 @@ cd disk-cleaner
 - **💻 平台特定优化** - Windows更新、APT、Homebrew缓存检测
 - **⏰ 自动化调度** - 基于定时器的清理任务
 - **🎯 交互式清理UI** - 5种视图模式，带可视化反馈
-- **🛡️ 增强安全性** - 受保护路径、'YES'确认机制、备份和日志记录
+- **🛡️ 增强安全性** - 受保护根目录和扩展名、自定义路径显式授权、精确路径确认、递归预览
 
 ## 功能特性
 
@@ -346,9 +346,11 @@ python scripts/monitor_disk.py --watch --interval 300
 
 **安全特性：**
 - 受保护的路径（从不删除系统目录）
-- 受保护的扩展名（从不删除可执行文件）
+- 受保护的扩展名会跳过匹配的顶层条目
+- 始终拒绝文件系统根目录和当前用户主目录
+- 自定义路径使用垃圾目录名称允许列表和精确路径确认
 - 默认干运行模式
-- 所有操作的详细日志记录
+- 递归预览和实际执行使用同一选择与计量规则
 
 **清理类别：**
 - **temp**：临时文件（%TEMP%、/tmp等）
@@ -410,8 +412,32 @@ python scripts/monitor_disk.py --watch --interval 300
 - Windows：`C:\Windows`、`C:\Program Files`、`C:\ProgramData`
 - Linux/macOS：`/usr`、`/bin`、`/sbin`、`/System`、`/Library`
 
+### 自定义 `--path` 边界
+
+`--path` 会递归删除目标目录中符合条件的子目录。工具会拒绝文件系统根目录和
+当前用户主目录。名称为 `cache`、`tmp`、`temp`、`logs`、`trash`、
+`recycle` 或 `downloads` 的目标目录可以直接预览。其他名称的目录，以及包含
+项目标记的同名目录，需要传入 `--allow-unsafe-path`。执行自定义路径删除时，
+还需要通过 `--confirm-path` 提供解析后的绝对路径。清理开始前会再次核对已验证
+根目录的设备与 inode。干运行会递归计量目录内容。递归计量与旧版 Windows 执行
+均会避免跟随符号链接和 Windows 重解析点。顶层执行会将它们作为叶节点移除。
+清理错误会写入报告，并产生非零退出状态。
+
+```bash
+# 预览已识别的垃圾目录
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/Temp" --dry-run
+
+# 确认精确目标后执行
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/Temp" --force \
+  --confirm-path "D:/Temp"
+
+# 通过显式授权选择任意目录
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/BuildOutput" \
+  --allow-unsafe-path --force --confirm-path "D:/BuildOutput"
+```
+
 ### 受保护的扩展名
-可执行文件和系统文件受保护：
+受保护扩展名适用于匹配的顶层条目。选中的目录及其内容会被递归删除。
 ```
 .exe, .dll, .sys, .drv, .bat, .cmd, .ps1, .sh, .bash, .zsh,
 .app, .dmg, .pkg, .deb, .rpm, .msi, .iso, .vhd, .vhdx

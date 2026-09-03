@@ -86,7 +86,7 @@ See [Usage](#usage-examples) section for how to run the scripts.
 - **💻 Platform-Specific Optimization** - Windows Update, APT, Homebrew cache detection
 - **⏰ Automated Scheduling** - Timer-based cleanup tasks
 - **🎯 Interactive Cleanup UI** - 5 view modes with visual feedback
-- **🛡️ Enhanced Safety** - Protected paths, 'YES' confirmation, backup & logging
+- **🛡️ Enhanced Safety** - Protected roots and extensions, explicit custom-path opt-in, exact-path confirmation, recursive previews
 
 ## Features
 
@@ -395,9 +395,11 @@ Safe junk file removal with multiple safety mechanisms.
 
 **Safety Features:**
 - Protected paths (never deletes system directories)
-- Protected extensions (never deletes executables)
+- Protected extensions skip matching top-level entries
+- Filesystem and home/profile roots are always rejected
+- Custom paths use a junk-directory allowlist and exact-path confirmation
 - Dry-run mode by default
-- Detailed logging of all operations
+- Recursive preview sizing matches the execution selection
 
 **Categories Cleaned:**
 - **temp**: Temporary files (%TEMP%, /tmp, etc.)
@@ -463,8 +465,36 @@ System directories are never touched:
 - Windows: `C:\Windows`, `C:\Program Files`, `C:\ProgramData`
 - Linux/macOS: `/usr`, `/bin`, `/sbin`, `/System`, `/Library`
 
+### Custom `--path` Boundary
+
+`--path` removes matching child directories recursively. Filesystem roots and
+the current home/profile root are rejected. Targets named `cache`, `tmp`,
+`temp`, `logs`, `trash`, `recycle`, or `downloads` are accepted by default.
+Other target names and junk-named directories containing project markers
+require `--allow-unsafe-path`. Actual custom-path deletion also requires
+`--confirm-path` with the resolved absolute target. The validated root identity
+is checked again immediately before cleanup. Dry-run sizing measures directory
+contents recursively. Recursive sizing and legacy Windows execution avoid
+following symbolic links and Windows reparse points. Top-level execution removes
+them as leaf entries. Cleanup errors remain visible in the report and produce a
+nonzero exit status.
+
+```bash
+# Preview a recognized junk directory
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/Temp" --dry-run
+
+# Execute after confirming the exact target
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/Temp" --force \
+  --confirm-path "D:/Temp"
+
+# Select an arbitrary directory through the explicit opt-in
+python skills/disk-cleaner/scripts/clean_disk.py --path "D:/BuildOutput" \
+  --allow-unsafe-path --force --confirm-path "D:/BuildOutput"
+```
+
 ### Protected Extensions
-Executables and system files are protected:
+Protected extensions apply to matching top-level entries. A selected directory
+is removed recursively with its contents.
 ```
 .exe, .dll, .sys, .drv, .bat, .cmd, .ps1, .sh, .bash, .zsh,
 .app, .dmg, .pkg, .deb, .rpm, .msi, .iso, .vhd, .vhdx
