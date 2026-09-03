@@ -273,23 +273,6 @@ def test_clean_directory_rejects_a_replaced_custom_root(clean_disk, tmp_path):
     assert source.read_text(encoding="utf-8") == "preserve"
 
 
-def test_windows_python_37_refuses_recursive_directory_cleanup(clean_disk, tmp_path, monkeypatch):
-    root = tmp_path / "cache"
-    nested = root / "nested"
-    nested.mkdir(parents=True)
-    payload = nested / "payload.bin"
-    payload.write_bytes(b"preserve")
-    cleaner = clean_disk.DiskCleaner(dry_run=False, show_progress=False)
-    cleaner.system = "windows"
-    monkeypatch.setattr(clean_disk.sys, "version_info", (3, 7))
-
-    result = cleaner.clean_directory(str(root))
-
-    assert result["files_deleted"] == 0
-    assert result["errors"] == ["Recursive directory cleanup on Windows requires Python 3.8+"]
-    assert payload.exists()
-
-
 def test_cli_exits_nonzero_after_writing_an_error_report(clean_disk, tmp_path, monkeypatch, capsys):
     cache = tmp_path / "cache"
     cache.mkdir()

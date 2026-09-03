@@ -476,7 +476,7 @@ require `--allow-unsafe-path`. Actual custom-path deletion also requires
 is checked again immediately before cleanup. Dry-run sizing measures directory
 contents recursively and treats symbolic links and Windows reparse points as
 leaf entries. Cleanup errors remain visible in the report and produce a nonzero
-exit status. Recursive directory execution on Windows requires Python 3.8+.
+exit status.
 
 ```bash
 # Preview a recognized junk directory

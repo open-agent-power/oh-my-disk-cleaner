@@ -420,8 +420,7 @@ python scripts/monitor_disk.py --watch --interval 300
 项目标记的同名目录，需要传入 `--allow-unsafe-path`。执行自定义路径删除时，
 还需要通过 `--confirm-path` 提供解析后的绝对路径。清理开始前会再次核对已验证
 根目录的设备与 inode。干运行会递归计量目录内容，并将符号链接和 Windows 重解析点
-作为叶节点。清理错误会写入报告，并产生非零退出状态。Windows 上的递归目录执行
-需要 Python 3.8 及以上版本。
+作为叶节点。清理错误会写入报告，并产生非零退出状态。
 
 ```bash
 # 预览已识别的垃圾目录

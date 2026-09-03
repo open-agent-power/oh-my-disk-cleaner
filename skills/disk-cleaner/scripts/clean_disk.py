@@ -527,10 +527,6 @@ class DiskCleaner:
                         result["space_freed_mb"] += size / (1024 * 1024)
                     else:
                         if item.is_dir() and not item.is_symlink():
-                            if self.system == "windows" and sys.version_info < (3, 8):
-                                raise OSError(
-                                    "Recursive directory cleanup on Windows requires Python 3.8+"
-                                )
                             shutil.rmtree(item)
                         else:
                             item.unlink()
