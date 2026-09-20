@@ -359,11 +359,21 @@ class DiskAnalyzer:
             pass
         return total_size
 
-    def _get_dir_size_fast(self, path: Path, max_depth: int = 1) -> int:
+    def _get_dir_size_fast(self, path: Path, max_depth: Optional[int] = None) -> int:
         """
         Calculate directory size using os.scandir() for better performance.
 
         This is 3-5x faster than the rglob() method.
+
+        Args:
+            path: Directory to measure.
+            max_depth: How many directory levels to descend. ``None`` (the
+                default) walks the whole tree, so the returned size accounts for
+                deeply nested content. A non-negative int caps the recursion:
+                ``0`` counts only files directly in ``path``, ``1`` also counts
+                its immediate subdirectories, and so on. Callers that only need a
+                shallow estimate pass an explicit limit; the directory-ranking
+                report must not, or large deeply nested trees are undercounted.
         """
         total_size = 0
 
@@ -374,9 +384,12 @@ class DiskAnalyzer:
                     try:
                         if entry.is_file(follow_symlinks=False):
                             total_size += entry.stat().st_size
-                        elif entry.is_dir(follow_symlinks=False) and max_depth > 0:
+                        elif entry.is_dir(follow_symlinks=False) and (
+                            max_depth is None or max_depth > 0
+                        ):
                             # Recursively calculate subdirectory size
-                            total_size += self._get_dir_size_fast(Path(entry.path), max_depth - 1)
+                            next_depth = None if max_depth is None else max_depth - 1
+                            total_size += self._get_dir_size_fast(Path(entry.path), next_depth)
                     except (PermissionError, OSError):
                         continue
         except (PermissionError, OSError):
