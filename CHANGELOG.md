@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Directory sizing undercounted deep trees** - `DiskAnalyzer._get_dir_size_fast`
+  defaulted to `max_depth=1`, so the "Largest Directories" ranking stopped
+  measuring after two levels and reported deeply nested content (Wine prefixes,
+  `node_modules`, game installs) as near-zero. The size walk now defaults to the
+  full tree; an explicit `max_depth` still bounds it for shallow estimates.
+
 ## [2.0.0] - 2025-01-22
 
 ### Added
